@@ -1,0 +1,10 @@
+[server]
+listen_addr = "127.0.0.1:8080"
+
+[[backends]]
+addr = "127.0.0.1:3000"
+weight = 1
+
+[[backends]]
+addr = "127.0.0.1:3001"
+weight = 1
