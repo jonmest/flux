@@ -5,6 +5,7 @@ use tracing::info;
 
 mod backend;
 mod config;
+mod gossip;
 mod health;
 mod proxy;
 
@@ -39,7 +40,6 @@ async fn main() -> Result<()> {
     });
     info!("Health checker started.");
 
-    // create and run proxy
     let proxy = proxy::Proxy::new(config.server.listen_addr, backend_pool);
     proxy.run().await?;
 
