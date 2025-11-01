@@ -11,11 +11,15 @@ pub struct HealthChecker {
 }
 
 impl HealthChecker {
-    pub fn new(backend_pool: SharedBackendPool) -> Self {
+    pub fn new(
+        backend_pool: SharedBackendPool,
+        check_interval_seconds: u64,
+        check_timeout_seconds: u64,
+    ) -> Self {
         Self {
             backend_pool,
-            check_interval: Duration::from_secs(5),
-            check_timeout: Duration::from_secs(2),
+            check_interval: Duration::from_secs(check_interval_seconds),
+            check_timeout: Duration::from_secs(check_timeout_seconds),
         }
     }
 

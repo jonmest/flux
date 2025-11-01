@@ -28,7 +28,11 @@ async fn main() -> Result<()> {
         .collect();
 
     let backend_pool = Arc::new(Mutex::new(backend::BackendPool::new(backends)));
-    let health_checker = health::HealthChecker::new(backend_pool.clone());
+    let health_checker = health::HealthChecker::new(
+        backend_pool.clone(),
+        config.health_check.check_interval_seconds,
+        config.health_check.check_timeout_seconds,
+    );
 
     tokio::spawn(async move {
         health_checker.run().await;

@@ -5,11 +5,18 @@ use std::net::SocketAddr;
 pub struct Config {
     pub server: ServerConfig,
     pub backends: Vec<Backend>,
+    pub health_check: HealthCheckConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub listen_addr: SocketAddr,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct HealthCheckConfig {
+    pub check_interval_seconds: u64,
+    pub check_timeout_seconds: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
