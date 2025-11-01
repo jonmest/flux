@@ -5,6 +5,7 @@ use tracing::info;
 
 mod backend;
 mod config;
+mod health;
 mod proxy;
 
 #[tokio::main]
@@ -27,6 +28,12 @@ async fn main() -> Result<()> {
         .collect();
 
     let backend_pool = Arc::new(Mutex::new(backend::BackendPool::new(backends)));
+    let health_checker = health::HealthChecker::new(backend_pool.clone());
+
+    tokio::spawn(async move {
+        health_checker.run().await;
+    });
+    info!("Health checker started.");
 
     // create and run proxy
     let proxy = proxy::Proxy::new(config.server.listen_addr, backend_pool);
