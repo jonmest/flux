@@ -1,6 +1,7 @@
 use anyhow::Result;
 use tracing::info;
 
+mod backend;
 mod config;
 mod proxy;
 
@@ -11,7 +12,6 @@ async fn main() -> Result<()> {
         .init();
 
     info!("Starting Flux load balancer");
-    // Todo
     let config = config::Config::from_file("config.toml")?;
     info!("Loaded config with {} backends", config.backends.len());
 
