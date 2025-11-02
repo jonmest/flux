@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct Backend {
@@ -23,6 +24,7 @@ struct BackendHealth {
     consecutive_failures: u32,
     consecutive_successes: u32,
     last_check: Instant,
+    last_local_check: Instant,
 }
 
 impl BackendHealth {
@@ -33,6 +35,7 @@ impl BackendHealth {
             consecutive_successes: 0,
             consecutive_failures: 0,
             last_check: Instant::now(),
+            last_local_check: Instant::now(),
         }
     }
 }
@@ -77,6 +80,7 @@ impl BackendPool {
     pub fn update_health(&mut self, addr: SocketAddr, is_healthy: bool) {
         if let Some(backend_health) = self.backends.iter_mut().find(|b| b.backend.addr == addr) {
             backend_health.last_check = Instant::now();
+            backend_health.last_local_check = Instant::now();
 
             if is_healthy {
                 backend_health.consecutive_successes += 1;
@@ -104,6 +108,72 @@ impl BackendPool {
 
     pub fn get_all_backends(&self) -> Vec<Backend> {
         self.backends.iter().map(|bh| bh.backend.clone()).collect()
+    }
+
+    pub fn get_backend_health_updates(&self) -> Vec<crate::gossip::BackendUpdate> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        self.backends
+            .iter()
+            .map(|backend_health| crate::gossip::BackendUpdate {
+                backend_addr: backend_health.backend.addr,
+                is_healthy: backend_health.status == HealthStatus::Healthy,
+                from_member: crate::gossip::MemberId("local".to_string()),
+                timestamp,
+            })
+            .collect()
+    }
+
+    pub fn apply_backend_update(&mut self, update: &crate::gossip::BackendUpdate) {
+        if let Some(backend_health) = self
+            .backends
+            .iter_mut()
+            .find(|b| b.backend.addr == update.backend_addr)
+        {
+            let time_since_local_check = backend_health.last_local_check.elapsed();
+            let should_apply =
+                time_since_local_check > Duration::from_secs(10) || !update.is_healthy;
+
+            if !should_apply {
+                debug!(
+                    "Ignoring gossip about {} - we checked locally {}s ago",
+                    update.backend_addr,
+                    time_since_local_check.as_secs()
+                );
+                return;
+            }
+
+            let new_status = if update.is_healthy {
+                HealthStatus::Healthy
+            } else {
+                HealthStatus::Unhealthy
+            };
+
+            if backend_health.status != new_status {
+                info!(
+                    "Gossip update: Backend {} is now {} (from {})",
+                    update.backend_addr,
+                    if update.is_healthy {
+                        "HEALTHY"
+                    } else {
+                        "UNHEALTHY"
+                    },
+                    update.from_member.0
+                );
+                backend_health.status = new_status;
+
+                if update.is_healthy {
+                    backend_health.consecutive_successes = 2; // Mark as healthy
+                    backend_health.consecutive_failures = 0;
+                } else {
+                    backend_health.consecutive_failures = 3; // Mark as unhealthy
+                    backend_health.consecutive_successes = 0;
+                }
+            }
+        }
     }
 }
 

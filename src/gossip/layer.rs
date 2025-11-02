@@ -1,5 +1,6 @@
 use super::member_list::{MemberList, SharedMemberList};
-use super::messages::{GossipMessage, Member, MemberId, MemberState, MemberUpdate};
+use super::messages::{BackendUpdate, GossipMessage, Member, MemberId, MemberState, MemberUpdate};
+use crate::backend::SharedBackendPool;
 use anyhow::Result;
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -13,6 +14,7 @@ pub struct GossipLayer {
     member_list: SharedMemberList,
     socket: Arc<UdpSocket>,
     pending_pings: Arc<Mutex<HashSet<MemberId>>>,
+    backend_pool: SharedBackendPool,
 }
 
 impl GossipLayer {
@@ -20,6 +22,7 @@ impl GossipLayer {
         local_id: MemberId,
         bind_addr: SocketAddr,
         suspect_timeout: Duration,
+        backend_pool: SharedBackendPool,
     ) -> Result<(Self, SharedMemberList)> {
         let socket = UdpSocket::bind(bind_addr).await?;
         debug!("Gossip layer bound to {}", bind_addr);
@@ -37,6 +40,7 @@ impl GossipLayer {
             member_list: member_list.clone(),
             socket: Arc::new(socket),
             pending_pings: Arc::new(Mutex::new(HashSet::new())),
+            backend_pool,
         };
 
         Ok((gossip_layer, member_list))
@@ -97,6 +101,7 @@ impl GossipLayer {
                 debug!("Handling Ping from {}", from.0);
 
                 self.process_member_updates(member_updates).await;
+                self.process_backend_updates(backend_updates).await;
 
                 {
                     let mut members = self.member_list.write().await;
@@ -108,14 +113,22 @@ impl GossipLayer {
                     });
                 }
 
-                let (ack_from, ack_addr, ack_incarnation, updates) = {
+                let (ack_from, ack_addr, ack_incarnation, updates, backend_updates) = {
                     let members = self.member_list.read().await;
+                    let backends = self.backend_pool.lock().await;
+
                     let local = members.local_member();
+                    let mut backend_updates = backends.get_backend_health_updates();
+                    for update in &mut backend_updates {
+                        update.from_member = local.id.clone();
+                    }
+
                     (
                         local.id.clone(),
                         local.addr,
                         local.incarnation,
                         members.get_member_updates(5),
+                        backend_updates,
                     )
                 };
 
@@ -124,7 +137,7 @@ impl GossipLayer {
                     from_addr: ack_addr,
                     incarnation: ack_incarnation,
                     member_updates: updates,
-                    backend_updates: vec![],
+                    backend_updates,
                 };
 
                 self.send_message(ack, from_addr).await?;
@@ -154,8 +167,7 @@ impl GossipLayer {
                 }
 
                 self.process_member_updates(member_updates).await;
-
-                // TODO: process backend_updates
+                self.process_backend_updates(backend_updates).await;
             }
 
             GossipMessage::IndirectPing { .. } => {
@@ -187,6 +199,7 @@ impl GossipLayer {
         member_list: SharedMemberList,
         socket: Arc<UdpSocket>,
         pending_pings: Arc<Mutex<HashSet<MemberId>>>,
+        backend_pool: SharedBackendPool,
         gossip_interval: Duration,
         ping_timeout: Duration,
     ) {
@@ -231,12 +244,20 @@ impl GossipLayer {
                 }
                 let local_info = {
                     let members = member_list.read().await;
+                    let backends = backend_pool.lock().await;
                     let local = members.local_member();
+
+                    let mut backend_updates = backends.get_backend_health_updates();
+                    for update in &mut backend_updates {
+                        update.from_member = local.id.clone();
+                    }
+
                     (
                         local.id.clone(),
                         local.addr,
                         local.incarnation,
                         members.get_member_updates(5),
+                        backend_updates,
                     )
                 };
 
@@ -245,7 +266,7 @@ impl GossipLayer {
                     from_addr: local_info.1,
                     incarnation: local_info.2,
                     member_updates: local_info.3,
-                    backend_updates: vec![],
+                    backend_updates: local_info.4,
                 };
 
                 debug!(
@@ -305,5 +326,16 @@ impl GossipLayer {
             }
         }
         info!("Cluster join initiated");
+    }
+
+    async fn process_backend_updates(&self, updates: Vec<BackendUpdate>) {
+        if updates.is_empty() {
+            return;
+        }
+
+        let mut backends = self.backend_pool.lock().await;
+        for update in updates {
+            backends.apply_backend_update(&update);
+        }
     }
 }

@@ -51,8 +51,13 @@ async fn main() -> Result<()> {
     let member_id = gossip::MemberId::generate(gossip_addr);
     let suspect_timeout = Duration::from_millis(config.gossip.suspect_timeout_ms);
 
-    let (mut gossip_layer, member_list) =
-        gossip::GossipLayer::new(member_id, gossip_addr, suspect_timeout).await?;
+    let (mut gossip_layer, member_list) = gossip::GossipLayer::new(
+        member_id,
+        gossip_addr,
+        suspect_timeout,
+        backend_pool.clone(),
+    )
+    .await?;
 
     let seed_nodes = config.gossip.seed_nodes.clone();
     gossip_layer.join_cluster(seed_nodes).await;
@@ -68,15 +73,14 @@ async fn main() -> Result<()> {
 
     let gossip_interval = Duration::from_millis(config.gossip.gossip_interval_ms);
     let ping_timeout = Duration::from_millis(config.gossip.ping_timeout_ms);
-
-    let gossip_interval = Duration::from_millis(config.gossip.gossip_interval_ms);
-    let ping_timeout = Duration::from_millis(config.gossip.ping_timeout_ms);
+    let backend_pool_for_gossip = backend_pool.clone();
 
     tokio::spawn(async move {
         gossip::GossipLayer::start_gossip_loop(
             member_list_clone,
             socket_clone,
             pending_pings_clone,
+            backend_pool_for_gossip,
             gossip_interval,
             ping_timeout,
         )
