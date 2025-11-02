@@ -1,4 +1,5 @@
 use super::member_list::{MemberList, SharedMemberList};
+use super::states::{IndirectPingState};
 use super::messages::{BackendUpdate, GossipMessage, Member, MemberId, MemberState, MemberUpdate};
 use crate::backend::SharedBackendPool;
 use anyhow::Result;
@@ -18,12 +19,6 @@ pub struct GossipLayer {
     backend_pool: SharedBackendPool,
 }
 
-#[derive(Debug, Clone)]
-pub struct IndirectPingState {
-    target: Member,
-    responses: Vec<bool>,
-    started_at: Instant,
-}
 
 impl GossipLayer {
     pub async fn new(
