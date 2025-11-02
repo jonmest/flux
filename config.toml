@@ -1,6 +1,9 @@
 [server]
 listen_addr = "127.0.0.1:8080"
 
+[gossip]
+bind_addr = "127.0.0.1:7946"
+
 [[backends]]
 addr = "127.0.0.1:3000"
 weight = 1

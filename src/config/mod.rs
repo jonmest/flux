@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub server: ServerConfig,
+    pub gossip: GossipConfig,
     pub backends: Vec<Backend>,
     pub health_check: HealthCheckConfig,
 }
@@ -11,6 +12,11 @@ pub struct Config {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub listen_addr: SocketAddr,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct GossipConfig {
+    pub bind_addr: SocketAddr,
 }
 
 #[derive(Debug, Deserialize, Clone)]

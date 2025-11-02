@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -39,6 +40,19 @@ async fn main() -> Result<()> {
         health_checker.run().await;
     });
     info!("Health checker started.");
+
+    let gossip_addr = config.gossip.bind_addr;
+    let member_id = gossip::MemberId::generate(gossip_addr);
+    let suspect_timeout = Duration::from_secs(5);
+
+    let (mut gossip_layer, member_list) =
+        gossip::GossipLayer::new(member_id, gossip_addr, suspect_timeout).await?;
+
+    tokio::spawn(async move {
+        gossip_layer.run().await;
+    });
+
+    info!("Gossip layer started on {}", gossip_addr);
 
     let proxy = proxy::Proxy::new(config.server.listen_addr, backend_pool);
     proxy.run().await?;
