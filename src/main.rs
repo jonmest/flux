@@ -17,7 +17,13 @@ async fn main() -> Result<()> {
         .init();
 
     info!("Starting Flux load balancer");
-    let config = config::Config::from_file("config.toml")?;
+
+    let config_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "config.toml".to_string());
+    info!("Loading config from {}", config_path);
+
+    let config = config::Config::from_file(&config_path)?;
     info!("Loaded config with {} backends", config.backends.len());
 
     let backends: Vec<backend::Backend> = config
@@ -43,13 +49,38 @@ async fn main() -> Result<()> {
 
     let gossip_addr = config.gossip.bind_addr;
     let member_id = gossip::MemberId::generate(gossip_addr);
-    let suspect_timeout = Duration::from_secs(5);
+    let suspect_timeout = Duration::from_millis(config.gossip.suspect_timeout_ms);
 
     let (mut gossip_layer, member_list) =
         gossip::GossipLayer::new(member_id, gossip_addr, suspect_timeout).await?;
 
+    let seed_nodes = config.gossip.seed_nodes.clone();
+    gossip_layer.join_cluster(seed_nodes).await;
+
+    let socket_clone = gossip_layer.socket();
+    let pending_pings_clone = gossip_layer.pending_pings();
+    let member_list_clone = member_list.clone();
+
+    // msg receive loop
     tokio::spawn(async move {
         gossip_layer.run().await;
+    });
+
+    let gossip_interval = Duration::from_millis(config.gossip.gossip_interval_ms);
+    let ping_timeout = Duration::from_millis(config.gossip.ping_timeout_ms);
+
+    let gossip_interval = Duration::from_millis(config.gossip.gossip_interval_ms);
+    let ping_timeout = Duration::from_millis(config.gossip.ping_timeout_ms);
+
+    tokio::spawn(async move {
+        gossip::GossipLayer::start_gossip_loop(
+            member_list_clone,
+            socket_clone,
+            pending_pings_clone,
+            gossip_interval,
+            ping_timeout,
+        )
+        .await;
     });
 
     info!("Gossip layer started on {}", gossip_addr);

@@ -1,10 +1,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::net::TcpStream;
+use std::time::Instant;
 use tokio::sync::Mutex;
-use tokio::time;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct Backend {

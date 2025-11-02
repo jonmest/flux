@@ -1,4 +1,4 @@
-use crate::backend::{Backend, SharedBackendPool};
+use crate::backend::SharedBackendPool;
 use anyhow::{Result, anyhow};
 use std::net::SocketAddr;
 use tokio::io;

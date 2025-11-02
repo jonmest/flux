@@ -1,9 +1,6 @@
 [server]
 listen_addr = "127.0.0.1:8080"
 
-[gossip]
-bind_addr = "127.0.0.1:7946"
-
 [[backends]]
 addr = "127.0.0.1:3000"
 weight = 1
@@ -15,3 +12,9 @@ weight = 1
 [health_check]
 check_interval_seconds = 5
 check_timeout_seconds = 2
+
+[gossip]
+bind_addr = "127.0.0.1:7946"
+gossip_interval_ms = 1000 
+ping_timeout_ms = 500
+suspect_timeout_ms = 5000 

@@ -10,13 +10,17 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct ServerConfig {
-    pub listen_addr: SocketAddr,
+pub struct GossipConfig {
+    pub bind_addr: SocketAddr,
+    pub gossip_interval_ms: u64,
+    pub ping_timeout_ms: u64,
+    pub suspect_timeout_ms: u64,
+    pub seed_nodes: Vec<SocketAddr>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct GossipConfig {
-    pub bind_addr: SocketAddr,
+pub struct ServerConfig {
+    pub listen_addr: SocketAddr,
 }
 
 #[derive(Debug, Deserialize, Clone)]
