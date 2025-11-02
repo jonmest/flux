@@ -2,10 +2,10 @@ use super::member_list::{MemberList, SharedMemberList};
 use super::messages::{BackendUpdate, GossipMessage, Member, MemberId, MemberState, MemberUpdate};
 use crate::backend::SharedBackendPool;
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, warn};
@@ -14,7 +14,15 @@ pub struct GossipLayer {
     member_list: SharedMemberList,
     socket: Arc<UdpSocket>,
     pending_pings: Arc<Mutex<HashSet<MemberId>>>,
+    pending_indirect_pings: Arc<Mutex<HashMap<MemberId, IndirectPingState>>>,
     backend_pool: SharedBackendPool,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndirectPingState {
+    target: Member,
+    responses: Vec<bool>,
+    started_at: Instant,
 }
 
 impl GossipLayer {
@@ -41,6 +49,7 @@ impl GossipLayer {
             socket: Arc::new(socket),
             pending_pings: Arc::new(Mutex::new(HashSet::new())),
             backend_pool,
+            pending_indirect_pings: Arc::new(Mutex::new(HashMap::new())),
         };
 
         Ok((gossip_layer, member_list))
@@ -52,6 +61,10 @@ impl GossipLayer {
 
     pub fn pending_pings(&self) -> Arc<Mutex<HashSet<MemberId>>> {
         self.pending_pings.clone()
+    }
+
+    pub fn pending_indirect_pings(&self) -> Arc<Mutex<HashMap<MemberId, IndirectPingState>>> {
+        self.pending_indirect_pings.clone()
     }
 
     pub async fn send_message(&self, message: GossipMessage, target: SocketAddr) -> Result<()> {
@@ -170,12 +183,94 @@ impl GossipLayer {
                 self.process_backend_updates(backend_updates).await;
             }
 
-            GossipMessage::IndirectPing { .. } => {
-                // TODO: implement indirect ping
+            GossipMessage::IndirectPing { 
+                from,
+                from_addr,
+                target_id,
+                target_addr,
+             } => {
+                debug!(
+                    "Handling IndirectPing request from {} to ping {}",
+                    from.0, target_id.0
+                );
+                let local_info = {
+                    let members = self.member_list.read().await;
+                    let backends = self.backend_pool.lock().await;
+                    let local = members.local_member();
+
+                    let mut backend_updates = backends.get_backend_health_updates();
+                    for update in &mut backend_updates {
+                        update.from_member = local.id.clone();
+                    }
+
+                    (
+                        local.id.clone(),
+                        local.addr,
+                        local.incarnation,
+                        members.get_member_updates(3),
+                        backend_updates,
+                    )
+                };
+
+                let ping = GossipMessage::Ping {
+                    from: local_info.0.clone(),
+                    from_addr: local_info.1,
+                    incarnation: local_info.2,
+                    member_updates: local_info.3,
+                    backend_updates: local_info.4,
+                };
+
+                let target_responded = if let Ok(bytes) = ping.to_bytes() {
+                    self.socket.send_to(&bytes, target_addr).await.is_ok()
+                } else {
+                    false
+                };
+
+                let indirect_ack = GossipMessage::IndirectAck {
+                    from: local_info.0,
+                    target_id,
+                    target_responded,
+                };
+
+                if let Ok(bytes) = indirect_ack.to_bytes() {
+                    self.socket.send_to(&bytes, from_addr).await?;
+                    debug!(
+                        "Sent IndirectAck to {} - target responded: {}",
+                        from.0, target_responded
+                    );
+                }
             }
 
-            GossipMessage::IndirectAck { .. } => {
-                // TODO: implement indirect ack
+            GossipMessage::IndirectAck {
+                from,
+                target_id,
+                target_responded,
+             } => {
+                debug!(
+                    "Handling IndirectAck from {}: target {} responded={}",
+                    from.0, target_id.0, target_responded
+                );
+
+                let mut pending = self.pending_indirect_pings.lock().await;
+
+                if let Some(state) = pending.get_mut(&target_id) {
+                    state.responses.push(target_responded);
+
+                    if target_responded {
+                        info!(
+                            "Target {} confirmed alive via indirect ping from {}",
+                            target_id.0, from.0
+                        );
+
+                        let mut members = self.member_list.write().await;
+                        members.mark_alive(&target_id);
+
+                        let mut direct_pending = self.pending_pings.lock().await;
+                        direct_pending.remove(&target_id);
+
+                        pending.remove(&target_id);
+                    }
+                }
             }
         }
 
@@ -199,6 +294,7 @@ impl GossipLayer {
         member_list: SharedMemberList,
         socket: Arc<UdpSocket>,
         pending_pings: Arc<Mutex<HashSet<MemberId>>>,
+        pending_indirect_pings: Arc<Mutex<HashMap<MemberId, IndirectPingState>>>,
         backend_pool: SharedBackendPool,
         gossip_interval: Duration,
         ping_timeout: Duration,
@@ -222,13 +318,67 @@ impl GossipLayer {
             }
 
             {
-                let mut pending = pending_pings.lock().await;
-                if !pending.is_empty() {
-                    let mut members = member_list.write().await;
-                    for member_id in pending.drain() {
-                        warn!("No ACK from {} - marking as suspect", member_id.0);
-                        members.mark_suspect(&member_id);
+                let mut pending_indirect = pending_indirect_pings.lock().await;
+                let now = Instant::now();
+                
+                let timed_out: Vec<MemberId> = pending_indirect
+                    .iter()
+                    .filter(|(_, state)| now.duration_since(state.started_at) > Duration::from_secs(2))
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                
+                for member_id in timed_out {
+                    if let Some(state) = pending_indirect.remove(&member_id) {
+                        let any_success = state.responses.iter().any(|&r| r);
+                        
+                        if !any_success {
+                            warn!(
+                                "All indirect pings failed for {} - marking as suspect",
+                                member_id.0
+                            );
+                            let mut members = member_list.write().await;
+                            members.mark_suspect(&member_id);
+                        }
                     }
+                }
+            }
+
+            {
+                let mut pending = pending_pings.lock().await;
+                let pending_indirect = pending_indirect_pings.lock().await;
+
+                if !pending.is_empty() {
+                    let members_to_indirect: Vec<Member> = {
+                        let members = member_list.read().await;
+                        pending
+                            .iter()
+                            .filter(|id| !pending_indirect.contains_key(id))  // Not already doing indirect
+                            .filter_map(|id| {
+                                members.get_all_members()
+                                    .into_iter()
+                                    .find(|m| &m.id == id)
+                            })
+                            .collect()
+                    };
+
+                    drop(pending_indirect);  // Release lock before async operation
+                
+                    for target in members_to_indirect {
+                        warn!("No direct ACK from {} - trying indirect pings", target.id.0);
+                        
+                        if let Err(e) = GossipLayer::send_indirect_pings(
+                            &member_list,
+                            &socket,
+                            &pending_indirect_pings,
+                            target,
+                            3,  // Try 3 indirect probers
+                        ).await {
+                            error!("Error sending indirect pings: {}", e);
+                        }
+                    }
+                    
+                    // Clear direct pending (we're now doing indirect)
+                    pending.clear();
                 }
             }
 
@@ -337,5 +487,74 @@ impl GossipLayer {
         for update in updates {
             backends.apply_backend_update(&update);
         }
+    }
+
+    async fn send_indirect_pings(
+        member_list: &SharedMemberList,
+        socket: &Arc<UdpSocket>,
+        pending_indirect: &Arc<Mutex<HashMap<MemberId, IndirectPingState>>>,
+        target: Member,
+        num_indirect: usize,
+    ) -> Result<()> {
+        let indirect_probers: Vec<Member> = {
+            let members = member_list.read().await;
+            let local_id = members.local_member().id.clone();
+
+            members
+                .get_alive_members()
+                .into_iter()
+                .filter(|m| m.id != target.id && m.id != local_id) // Not target, not us
+                .take(num_indirect)
+                .collect()
+        };
+
+        if indirect_probers.is_empty() {
+            warn!("No members available for indirect ping of {}", target.id.0);
+            return Ok(());
+        }
+
+        info!(
+            "Sending {} indirect ping requests for {} via {:?}",
+            indirect_probers.len(),
+            target.id.0,
+            indirect_probers.iter().map(|m| &m.id.0).collect::<Vec<_>>()
+        );
+
+        {
+            let mut pending = pending_indirect.lock().await;
+            pending.insert(
+                target.id.clone(),
+                IndirectPingState {
+                    target: target.clone(),
+                    responses: Vec::new(),
+                    started_at: Instant::now(),
+                },
+            );
+        }
+
+        let local_info = {
+            let members = member_list.read().await;
+            let local = members.local_member();
+            (local.id.clone(), local.addr)
+        };
+
+        for prober in indirect_probers {
+            let indirect_ping = GossipMessage::IndirectPing {
+                from: local_info.0.clone(),
+                from_addr: local_info.1,
+                target_id: target.id.clone(),
+                target_addr: target.addr,
+            };
+
+            if let Ok(bytes) = indirect_ping.to_bytes() {
+                socket.send_to(&bytes, prober.addr).await?;
+                debug!(
+                    "Sent indirect ping request to {} for target {}",
+                    prober.id.0, target.id.0
+                );
+            }
+        }
+
+        Ok(())
     }
 }

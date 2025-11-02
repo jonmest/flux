@@ -64,6 +64,7 @@ async fn main() -> Result<()> {
 
     let socket_clone = gossip_layer.socket();
     let pending_pings_clone = gossip_layer.pending_pings();
+    let pending_indirect_pings_clone = gossip_layer.pending_indirect_pings();
     let member_list_clone = member_list.clone();
 
     // msg receive loop
@@ -80,6 +81,7 @@ async fn main() -> Result<()> {
             member_list_clone,
             socket_clone,
             pending_pings_clone,
+            pending_indirect_pings_clone,
             backend_pool_for_gossip,
             gossip_interval,
             ping_timeout,
