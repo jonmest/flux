@@ -19,7 +19,6 @@ pub struct GossipLayer {
     backend_pool: SharedBackendPool,
 }
 
-
 impl GossipLayer {
     pub async fn new(
         local_id: MemberId,
