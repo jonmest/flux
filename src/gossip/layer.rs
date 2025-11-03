@@ -295,8 +295,15 @@ impl GossipLayer {
 
     async fn process_member_updates(&self, updates: Vec<MemberUpdate>) {
         let mut members = self.member_list.write().await;
+        let local_id = members.local_member().id.clone();
 
         for update in updates {
+            if update.member_id == local_id && (update.state == MemberState::Suspect || update.state == MemberState::Dead) {
+                warn!("Received false accusation - disputing.");
+                members.increment_incarnation();
+                continue;
+            }
+            
             members.upsert_member(Member {
                 id: update.member_id,
                 addr: update.addr,
