@@ -14,6 +14,7 @@ check_interval_seconds = 5
 check_timeout_seconds = 2
 
 [gossip]
+seed_nodes = []
 bind_addr = "127.0.0.1:7946"
 gossip_interval_ms = 1000 
 ping_timeout_ms = 500
