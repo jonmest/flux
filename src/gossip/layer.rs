@@ -3,9 +3,7 @@ use super::messages::{BackendUpdate, GossipMessage, Member, MemberId, MemberStat
 use super::states::IndirectPingState;
 use crate::backend::SharedBackendPool;
 use anyhow::Result;
-use rand::thread_rng;
-use std::any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,7 +14,7 @@ use tracing::{debug, error, info, warn};
 pub struct GossipLayer {
     member_list: SharedMemberList,
     socket: Arc<UdpSocket>,
-    pending_pings: Arc<Mutex<HashSet<MemberId>>>,
+    pending_pings: Arc<Mutex<HashMap<MemberId, Instant>>>,
     pending_indirect_pings: Arc<Mutex<HashMap<MemberId, IndirectPingState>>>,
     backend_pool: SharedBackendPool,
 }
@@ -43,7 +41,7 @@ impl GossipLayer {
         let gossip_layer = Self {
             member_list: member_list.clone(),
             socket: Arc::new(socket),
-            pending_pings: Arc::new(Mutex::new(HashSet::new())),
+            pending_pings: Arc::new(Mutex::new(HashMap::new())),
             backend_pool,
             pending_indirect_pings: Arc::new(Mutex::new(HashMap::new())),
         };
@@ -55,7 +53,7 @@ impl GossipLayer {
         self.socket.clone()
     }
 
-    pub fn pending_pings(&self) -> Arc<Mutex<HashSet<MemberId>>> {
+    pub fn pending_pings(&self) -> Arc<Mutex<HashMap<MemberId, Instant>>> {
         self.pending_pings.clone()
     }
 
@@ -98,7 +96,7 @@ impl GossipLayer {
         }
     }
 
-    async fn handle_message(&mut self, message: GossipMessage, src_addr: SocketAddr) -> Result<()> {
+    async fn handle_message(&mut self, message: GossipMessage, _src_addr: SocketAddr) -> Result<()> {
         match message {
             GossipMessage::Ping {
                 from,
@@ -147,7 +145,7 @@ impl GossipLayer {
                     incarnation: ack_incarnation,
                     member_updates: updates,
                     backend_updates,
-                };
+                }.trim_to_fit();
 
                 self.send_message(ack, from_addr).await?;
             }
@@ -160,19 +158,24 @@ impl GossipLayer {
                 backend_updates,
             } => {
                 debug!("Handling Ack from {}", from.0);
-                {
+
+                let rtt = {
                     let mut pending = self.pending_pings.lock().await;
-                    pending.remove(&from);
-                }
+                    pending.remove(&from).map(|sent_at| sent_at.elapsed())
+                };
 
                 {
                     let mut members = self.member_list.write().await;
+                    if let Some(rtt) = rtt {
+                        members.record_rtt(&from, rtt);
+                    }
                     members.upsert_member(Member {
                         id: from.clone(),
                         addr: from_addr,
                         state: MemberState::Alive,
                         incarnation,
                     });
+                    members.mark_alive(&from);
                 }
 
                 self.process_member_updates(member_updates).await;
@@ -219,7 +222,7 @@ impl GossipLayer {
 
                     {
                         let mut pending = pending_pings.lock().await;
-                        pending.insert(target_id.clone());
+                        pending.insert(target_id.clone(), Instant::now());
                     }
 
                     let ping = GossipMessage::Ping {
@@ -228,7 +231,7 @@ impl GossipLayer {
                         incarnation: local_info.2,
                         member_updates: local_info.3,
                         backend_updates: local_info.4,
-                    };
+                    }.trim_to_fit();
 
                     if let Ok(bytes) = ping.to_bytes() {
                         let _ = socket.send_to(&bytes, target_addr).await;
@@ -237,8 +240,8 @@ impl GossipLayer {
                     tokio::time::sleep(Duration::from_millis(500)).await;
 
                     let target_responded = {
-                        let mut pending = pending_pings.lock().await;
-                        !pending.remove(&target_id)
+                        let pending = pending_pings.lock().await;
+                        !pending.contains_key(&target_id)
                     };
 
                     let indirect_ack = GossipMessage::IndirectAck {
@@ -319,7 +322,7 @@ impl GossipLayer {
     pub async fn start_gossip_loop(
         member_list: SharedMemberList,
         socket: Arc<UdpSocket>,
-        pending_pings: Arc<Mutex<HashSet<MemberId>>>,
+        pending_pings: Arc<Mutex<HashMap<MemberId, Instant>>>,
         pending_indirect_pings: Arc<Mutex<HashMap<MemberId, IndirectPingState>>>,
         backend_pool: SharedBackendPool,
         gossip_interval: Duration,
@@ -340,17 +343,38 @@ impl GossipLayer {
             if tick_count % 30 == 0 {
                 let mut members = member_list.write().await;
                 members.prune_dead_members(Duration::from_secs(60));
+
+                let mut pending_indirect = pending_indirect_pings.lock().await;
+                let dead_member_ids: Vec<MemberId> = members
+                    .get_all_members()
+                    .iter()
+                    .filter(|m| m.state == MemberState::Dead)
+                    .map(|m| m.id.clone())
+                    .collect();
+
+                for id in dead_member_ids {
+                    pending_indirect.remove(&id);
+                }
+
                 info!("Pruned dead members from list");
             }
 
             {
+                let adaptive_timeout = {
+                    let members = member_list.read().await;
+                    members.get_adaptive_timeout(ping_timeout)
+                };
+
                 let mut pending_indirect = pending_indirect_pings.lock().await;
                 let now = Instant::now();
+
+                let check_timeout = adaptive_timeout * 2;
+                let hard_timeout = adaptive_timeout * 3;
 
                 let timed_out: Vec<MemberId> = pending_indirect
                     .iter()
                     .filter(|(_, state)| {
-                        now.duration_since(state.started_at) > Duration::from_secs(2)
+                        now.duration_since(state.started_at) > check_timeout
                     })
                     .map(|(id, _)| id.clone())
                     .collect();
@@ -359,7 +383,7 @@ impl GossipLayer {
                     if let Some(state) = pending_indirect.get(&member_id) {
                         let num_probers = 3;
                         let got_all_responses = state.responses.len() >= num_probers;
-                        let timeout_exceeded = now.duration_since(state.started_at) > Duration::from_secs(3);
+                        let timeout_exceeded = now.duration_since(state.started_at) > hard_timeout;
 
                         if got_all_responses || timeout_exceeded {
                             let any_success = state.responses.iter().any(|&r| r);
@@ -385,8 +409,8 @@ impl GossipLayer {
                     let members_to_indirect: Vec<Member> = {
                         let members = member_list.read().await;
                         pending
-                            .iter()
-                            .filter(|id| !pending_indirect.contains_key(id)) // Not already doing indirect
+                            .keys()
+                            .filter(|id| !pending_indirect.contains_key(id))
                             .filter_map(|id| {
                                 members.get_all_members().into_iter().find(|m| &m.id == id)
                             })
@@ -423,7 +447,7 @@ impl GossipLayer {
             if let Some(target_member) = target {
                 {
                     let mut pending = pending_pings.lock().await;
-                    pending.insert(target_member.id.clone());
+                    pending.insert(target_member.id.clone(), Instant::now());
                 }
                 let local_info = {
                     let members = member_list.read().await;
@@ -451,7 +475,7 @@ impl GossipLayer {
                     incarnation: local_info.2,
                     member_updates: local_info.3,
                     backend_updates: local_info.4,
-                };
+                }.trim_to_fit();
 
                 debug!(
                     "Pinging member {} at {}",

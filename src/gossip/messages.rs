@@ -85,15 +85,100 @@ pub enum GossipMessage {
     },
 }
 
+const MAX_UDP_PACKET_SIZE: usize = 1400;
+
 impl GossipMessage {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let bytes = bincode::serialize(self)?;
+        if bytes.len() > MAX_UDP_PACKET_SIZE {
+            return Err(anyhow::anyhow!(
+                "Message size {} exceeds max UDP packet size {}",
+                bytes.len(),
+                MAX_UDP_PACKET_SIZE
+            ));
+        }
         Ok(bytes)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let message = bincode::deserialize(bytes)?;
         Ok(message)
+    }
+
+    pub fn estimated_size(&self) -> usize {
+        bincode::serialized_size(self).unwrap_or(0) as usize
+    }
+
+    pub fn trim_to_fit(self) -> Self {
+        match self {
+            GossipMessage::Ping {
+                from,
+                from_addr,
+                incarnation,
+                mut member_updates,
+                mut backend_updates,
+            } => {
+                let mut msg = GossipMessage::Ping {
+                    from: from.clone(),
+                    from_addr,
+                    incarnation,
+                    member_updates: vec![],
+                    backend_updates: vec![],
+                };
+
+                while msg.estimated_size() < MAX_UDP_PACKET_SIZE && !member_updates.is_empty() {
+                    if let Some(update) = member_updates.pop() {
+                        if let GossipMessage::Ping { member_updates: ref mut updates, .. } = msg {
+                            updates.push(update);
+                        }
+                    }
+                }
+
+                while msg.estimated_size() < MAX_UDP_PACKET_SIZE && !backend_updates.is_empty() {
+                    if let Some(update) = backend_updates.pop() {
+                        if let GossipMessage::Ping { backend_updates: ref mut updates, .. } = msg {
+                            updates.push(update);
+                        }
+                    }
+                }
+
+                msg
+            }
+            GossipMessage::Ack {
+                from,
+                from_addr,
+                incarnation,
+                mut member_updates,
+                mut backend_updates,
+            } => {
+                let mut msg = GossipMessage::Ack {
+                    from: from.clone(),
+                    from_addr,
+                    incarnation,
+                    member_updates: vec![],
+                    backend_updates: vec![],
+                };
+
+                while msg.estimated_size() < MAX_UDP_PACKET_SIZE && !member_updates.is_empty() {
+                    if let Some(update) = member_updates.pop() {
+                        if let GossipMessage::Ack { member_updates: ref mut updates, .. } = msg {
+                            updates.push(update);
+                        }
+                    }
+                }
+
+                while msg.estimated_size() < MAX_UDP_PACKET_SIZE && !backend_updates.is_empty() {
+                    if let Some(update) = backend_updates.pop() {
+                        if let GossipMessage::Ack { backend_updates: ref mut updates, .. } = msg {
+                            updates.push(update);
+                        }
+                    }
+                }
+
+                msg
+            }
+            other => other,
+        }
     }
 }
 

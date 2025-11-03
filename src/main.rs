@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     .await?;
 
     let seed_nodes = config.gossip.seed_nodes.clone();
-    gossip_layer.join_cluster(seed_nodes).await;
+    gossip_layer.join_cluster(seed_nodes).await?;
 
     let socket_clone = gossip_layer.socket();
     let pending_pings_clone = gossip_layer.pending_pings();

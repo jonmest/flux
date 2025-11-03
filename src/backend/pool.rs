@@ -100,8 +100,18 @@ impl BackendPool {
             .find(|b| b.backend.addr == update.backend_addr)
         {
             let time_since_local_check = backend_health.last_local_check.elapsed();
-            let should_apply =
-                time_since_local_check > Duration::from_secs(10) || !update.is_healthy;
+            let trust_local = time_since_local_check < Duration::from_secs(6);
+
+            let should_apply = if trust_local {
+                if update.is_healthy {
+                    false
+                } else {
+                    backend_health.status == HealthStatus::Healthy
+                        && backend_health.consecutive_failures == 0
+                }
+            } else {
+                true
+            };
 
             if !should_apply {
                 debug!(
@@ -135,10 +145,12 @@ impl BackendPool {
                     backend_health.consecutive_successes = 2;
                     backend_health.consecutive_failures = 0;
                 } else {
-                    backend_health.consecutive_failures = 3;
+                    backend_health.consecutive_failures = 2;
                     backend_health.consecutive_successes = 0;
                 }
             }
+
+            backend_health.last_check = Instant::now();
         }
     }
 }

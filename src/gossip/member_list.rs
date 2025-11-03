@@ -1,5 +1,3 @@
-use rand::seq::SliceRandom;
-use rand::thread_rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,6 +31,7 @@ struct MemberInfo {
     member: Member,
     last_seen: Instant,
     suspect_at: Option<Instant>,
+    rtt_samples: Vec<Duration>,
 }
 
 impl MemberInfo {
@@ -41,7 +40,23 @@ impl MemberInfo {
             member,
             last_seen: Instant::now(),
             suspect_at: None,
+            rtt_samples: Vec::new(),
         }
+    }
+
+    fn record_rtt(&mut self, rtt: Duration) {
+        self.rtt_samples.push(rtt);
+        if self.rtt_samples.len() > 10 {
+            self.rtt_samples.remove(0);
+        }
+    }
+
+    fn avg_rtt(&self) -> Option<Duration> {
+        if self.rtt_samples.is_empty() {
+            return None;
+        }
+        let sum: Duration = self.rtt_samples.iter().sum();
+        Some(sum / self.rtt_samples.len() as u32)
     }
 }
 
@@ -268,6 +283,31 @@ impl MemberList {
 
     pub fn local_member(&self) -> &Member {
         &self.local_member
+    }
+
+    pub fn record_rtt(&mut self, member_id: &MemberId, rtt: Duration) {
+        if let Some(info) = self.members.get_mut(member_id) {
+            info.record_rtt(rtt);
+        }
+    }
+
+    pub fn get_adaptive_timeout(&self, base_timeout: Duration) -> Duration {
+        let rtts: Vec<Duration> = self.members
+            .values()
+            .filter_map(|info| info.avg_rtt())
+            .collect();
+
+        if rtts.is_empty() {
+            return base_timeout;
+        }
+
+        let avg: Duration = rtts.iter().sum::<Duration>() / rtts.len() as u32;
+        let timeout = avg * 3;
+
+        timeout.clamp(
+            Duration::from_millis(300),
+            Duration::from_secs(2)
+        )
     }
 
     pub fn increment_incarnation(&mut self) {
