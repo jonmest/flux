@@ -1,0 +1,16 @@
+System:
+  Kernel: 6.8.0-87-generic arch: x86_64 bits: 64 compiler: gcc v: 13.3.0 clocksource: tsc
+  Desktop: Cinnamon v: 6.4.8 tk: GTK v: 3.24.41 wm: Muffin v: 6.4.1 vt: 7 dm: LightDM v: 1.30.0
+    Distro: Linux Mint 22.1 Xia base: Ubuntu 24.04 noble
+CPU:
+  Info: 8-core model: Intel Core i9-9900K bits: 64 type: MT MCP smt: enabled arch: Coffee Lake
+    rev: C cache: L1: 512 KiB L2: 2 MiB L3: 16 MiB
+  Speed (MHz): avg: 1600 min/max: 800/5000 cores: 1: 1600 2: 1600 3: 1600 4: 1600 5: 1600 6: 1600
+    7: 1600 8: 1600 9: 1600 10: 1600 11: 1600 12: 1600 13: 1600 14: 1600 15: 1600 16: 1600
+    bogomips: 115200
+64GB RAM
+---
+Baseline: 9,830 req/s
+- 10 concurrent threads
+- 30 second test
+- Creating new TCP connection per request
