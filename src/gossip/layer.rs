@@ -131,12 +131,12 @@ impl GossipLayer {
                     for update in &mut backend_updates {
                         update.from_member = local.id.clone();
                     }
-
+                    let update_limit: usize = std::cmp::max(5, members.get_all_members().len() / 2);
                     (
                         local.id.clone(),
                         local.addr,
                         local.incarnation,
-                        members.get_member_updates(5),
+                        members.get_member_updates(update_limit),
                         backend_updates,
                     )
                 };
@@ -206,11 +206,13 @@ impl GossipLayer {
                             update.from_member = local.id.clone();
                         }
 
+                        let update_limit: usize = std::cmp::max(5, members.get_all_members().len() / 2);
+
                         (
                             local.id.clone(),
                             local.addr,
                             local.incarnation,
-                            members.get_member_updates(3),
+                            members.get_member_updates(update_limit),
                             backend_updates,
                         )
                     };
@@ -432,12 +434,13 @@ impl GossipLayer {
                     for update in &mut backend_updates {
                         update.from_member = local.id.clone();
                     }
+                    let update_limit = std::cmp::max(5, members.get_all_members().len() / 2);
 
                     (
                         local.id.clone(),
                         local.addr,
                         local.incarnation,
-                        members.get_member_updates(5),
+                        members.get_member_updates(update_limit),
                         backend_updates,
                     )
                 };
