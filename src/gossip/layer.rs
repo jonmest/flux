@@ -466,47 +466,76 @@ impl GossipLayer {
         }
     }
 
-    pub async fn join_cluster(&self, seed_nodes: Vec<SocketAddr>) {
+    pub async fn join_cluster(&self, seed_nodes: Vec<SocketAddr>) -> Result<(), anyhow::Error>{
         if seed_nodes.is_empty() {
             info!("No seed nodes configured - starting as initial cluster member");
-            return;
+            return Ok(());
         }
 
         info!("Joining cluster via {} seed nodes", seed_nodes.len());
+        let mut successful_contacts = 0;
+        let max_retries = 3;
+        let retry_delay = Duration::from_millis(500);
 
-        for seed_addr in seed_nodes {
-            let (ping_msg, local_addr) = {
-                let members = self.member_list.read().await;
-                let local = members.local_member();
-                let ping = GossipMessage::Ping {
-                    from: local.id.clone(),
-                    from_addr: local.addr,
-                    incarnation: local.incarnation,
-                    member_updates: vec![],
-                    backend_updates: vec![],
-                };
-
-                (ping, local.addr)
-            };
-
-            if seed_addr == local_addr {
-                continue;
+        for retry in 0..max_retries {
+            if successful_contacts > 0 {
+                break;
+            }
+            if retry > 0 {
+                info!("Retry {}/{} - attempting to contact seed nodes", retry, max_retries);
+                tokio::time::sleep(retry_delay).await;
             }
 
-            info!("Contacting seed node at {}", seed_addr);
+            for seed_addr in &seed_nodes {
+                let (ping_msg, local_addr) = {
+                    let members = self.member_list.read().await;
+                    let local = members.local_member();
+                    let ping = GossipMessage::Ping {
+                        from: local.id.clone(),
+                        from_addr: local.addr,
+                        incarnation: local.incarnation,
+                        member_updates: vec![],
+                        backend_updates: vec![],
+                    };
 
-            if let Ok(bytes) = ping_msg.to_bytes() {
-                match self.socket.send_to(&bytes, seed_addr).await {
-                    Ok(_) => {
-                        info!("Sent join request to {}", seed_addr);
+                    (ping, local.addr)
+                };
+
+                if *seed_addr == local_addr {
+                    continue;
+                }
+
+                info!("Contacting seed node at {}", seed_addr);
+
+                if let Ok(bytes) = ping_msg.to_bytes() {
+                    match self.socket.send_to(&bytes, seed_addr).await {
+                        Ok(_) => {
+                            info!("Sent join request to {}", seed_addr);
+                        }
+                        Err(e) => {
+                            warn!("Failed to contact seed node {}: {}", seed_addr, e);
+                        }
                     }
-                    Err(e) => {
-                        warn!("Failed to contact seed node {}: {}", seed_addr, e);
+                }
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                
+                {
+                    let members = self.member_list.read().await;
+                    let known_members = members.get_all_members().len();
+                    successful_contacts = known_members;
+                    if successful_contacts > 0 {
+                        info!("Successfully discovered {} cluster members", successful_contacts);
+                        break;
                     }
                 }
             }
         }
-        info!("Cluster join initiated");
+
+        if successful_contacts == 0 {
+            warn!("Failed to contact any seed nodes after {} retries - starting isolated", max_retries);
+        }
+        info!("Cluster join completed with {} known members", successful_contacts);
+        Ok(())
     }
 
     async fn process_backend_updates(&self, updates: Vec<BackendUpdate>) {
