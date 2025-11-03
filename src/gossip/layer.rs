@@ -4,6 +4,7 @@ use super::states::IndirectPingState;
 use crate::backend::SharedBackendPool;
 use anyhow::Result;
 use rand::thread_rng;
+use std::any;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -303,7 +304,7 @@ impl GossipLayer {
                 members.increment_incarnation();
                 continue;
             }
-            
+
             members.upsert_member(Member {
                 id: update.member_id,
                 addr: update.addr,
@@ -353,16 +354,22 @@ impl GossipLayer {
                     .collect();
 
                 for member_id in timed_out {
-                    if let Some(state) = pending_indirect.remove(&member_id) {
-                        let any_success = state.responses.iter().any(|&r| r);
+                    if let Some(state) = pending_indirect.get(&member_id) {
+                        let num_probers = 3;
+                        let got_all_responses = state.responses.len() >= num_probers;
+                        let timeout_exceeded = now.duration_since(state.started_at) > Duration::from_secs(3);
 
-                        if !any_success {
-                            warn!(
-                                "All indirect pings failed for {} - marking as suspect",
-                                member_id.0
-                            );
-                            let mut members = member_list.write().await;
-                            members.mark_suspect(&member_id);
+                        if got_all_responses || timeout_exceeded {
+                            let any_success = state.responses.iter().any(|&r| r);
+                            if !any_success {
+                                warn!(
+                                    "All indirect pings failed for {} - marking as suspect",
+                                    member_id.0
+                                );
+                                let mut members = member_list.write().await;
+                                members.mark_suspect(&member_id);
+                            }
+                            pending_indirect.remove(&member_id);
                         }
                     }
                 }
@@ -384,7 +391,7 @@ impl GossipLayer {
                             .collect()
                     };
 
-                    drop(pending_indirect); // Release lock before async operation
+                    drop(pending_indirect);
 
                     for target in members_to_indirect {
                         warn!("No direct ACK from {} - trying indirect pings", target.id.0);
@@ -394,7 +401,7 @@ impl GossipLayer {
                             &socket,
                             &pending_indirect_pings,
                             target,
-                            3, // Try 3 indirect probers
+                            3, // try 3 indirect probers
                         )
                         .await
                         {
@@ -402,7 +409,6 @@ impl GossipLayer {
                         }
                     }
 
-                    // Clear direct pending (we're now doing indirect)
                     pending.clear();
                 }
             }
