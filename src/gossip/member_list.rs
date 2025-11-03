@@ -247,23 +247,23 @@ impl MemberList {
             self.index.insert(mid.clone(), index.try_into().unwrap());
         }
 
-        // Reset cursor after reshuffling
         self.cursor = 0;
     }
 
     pub fn get_member_updates(&self, max_count: usize) -> Vec<MemberUpdate> {
-        // for now, just return recent state changes
-        // todo: track which updates each peer has seen
-        self.members
-            .values()
-            .take(max_count)
-            .map(|info| MemberUpdate {
-                member_id: info.member.id.clone(),
-                addr: info.member.addr,
-                state: info.member.state,
-                incarnation: info.member.incarnation,
-            })
-            .collect()
+        let mut updates: Vec<_> = self.members
+                .values()
+                .map(|m| (m, m.last_seen))
+                .collect();
+
+        updates.sort_by(|a, b| b.1.cmp(&a.1));
+
+        updates.into_iter().take(max_count).map(|(info, _)| MemberUpdate {
+            member_id: info.member.id.clone(),
+            addr: info.member.addr,
+            state: info.member.state,
+            incarnation: info.member.incarnation,
+        }).collect()
     }
 
     pub fn local_member(&self) -> &Member {
