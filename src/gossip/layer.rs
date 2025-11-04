@@ -96,7 +96,11 @@ impl GossipLayer {
         }
     }
 
-    async fn handle_message(&mut self, message: GossipMessage, _src_addr: SocketAddr) -> Result<()> {
+    async fn handle_message(
+        &mut self,
+        message: GossipMessage,
+        _src_addr: SocketAddr,
+    ) -> Result<()> {
         match message {
             GossipMessage::Ping {
                 from,
@@ -122,7 +126,7 @@ impl GossipLayer {
 
                 let (ack_from, ack_addr, ack_incarnation, updates, backend_updates) = {
                     let members = self.member_list.read().await;
-                    let backends = self.backend_pool.lock().await;
+                    let backends = self.backend_pool.read().await;
 
                     let local = members.local_member();
                     let mut backend_updates = backends.get_backend_health_updates();
@@ -145,7 +149,8 @@ impl GossipLayer {
                     incarnation: ack_incarnation,
                     member_updates: updates,
                     backend_updates,
-                }.trim_to_fit();
+                }
+                .trim_to_fit();
 
                 self.send_message(ack, from_addr).await?;
             }
@@ -201,7 +206,7 @@ impl GossipLayer {
                 tokio::spawn(async move {
                     let local_info = {
                         let members = member_list.read().await;
-                        let backends = backend_pool.lock().await;
+                        let backends = backend_pool.read().await;
                         let local = members.local_member();
 
                         let mut backend_updates = backends.get_backend_health_updates();
@@ -209,7 +214,8 @@ impl GossipLayer {
                             update.from_member = local.id.clone();
                         }
 
-                        let update_limit: usize = std::cmp::max(5, members.get_all_members().len() / 2);
+                        let update_limit: usize =
+                            std::cmp::max(5, members.get_all_members().len() / 2);
 
                         (
                             local.id.clone(),
@@ -231,7 +237,8 @@ impl GossipLayer {
                         incarnation: local_info.2,
                         member_updates: local_info.3,
                         backend_updates: local_info.4,
-                    }.trim_to_fit();
+                    }
+                    .trim_to_fit();
 
                     if let Ok(bytes) = ping.to_bytes() {
                         let _ = socket.send_to(&bytes, target_addr).await;
@@ -304,7 +311,9 @@ impl GossipLayer {
         let local_id = members.local_member().id.clone();
 
         for update in updates {
-            if update.member_id == local_id && (update.state == MemberState::Suspect || update.state == MemberState::Dead) {
+            if update.member_id == local_id
+                && (update.state == MemberState::Suspect || update.state == MemberState::Dead)
+            {
                 warn!("Received false accusation - disputing.");
                 members.increment_incarnation();
                 continue;
@@ -373,9 +382,7 @@ impl GossipLayer {
 
                 let timed_out: Vec<MemberId> = pending_indirect
                     .iter()
-                    .filter(|(_, state)| {
-                        now.duration_since(state.started_at) > check_timeout
-                    })
+                    .filter(|(_, state)| now.duration_since(state.started_at) > check_timeout)
                     .map(|(id, _)| id.clone())
                     .collect();
 
@@ -451,7 +458,7 @@ impl GossipLayer {
                 }
                 let local_info = {
                     let members = member_list.read().await;
-                    let backends = backend_pool.lock().await;
+                    let backends = backend_pool.read().await;
                     let local = members.local_member();
 
                     let mut backend_updates = backends.get_backend_health_updates();
@@ -475,7 +482,8 @@ impl GossipLayer {
                     incarnation: local_info.2,
                     member_updates: local_info.3,
                     backend_updates: local_info.4,
-                }.trim_to_fit();
+                }
+                .trim_to_fit();
 
                 debug!(
                     "Pinging member {} at {}",
@@ -493,7 +501,7 @@ impl GossipLayer {
         }
     }
 
-    pub async fn join_cluster(&self, seed_nodes: Vec<SocketAddr>) -> Result<(), anyhow::Error>{
+    pub async fn join_cluster(&self, seed_nodes: Vec<SocketAddr>) -> Result<(), anyhow::Error> {
         if seed_nodes.is_empty() {
             info!("No seed nodes configured - starting as initial cluster member");
             return Ok(());
@@ -509,7 +517,10 @@ impl GossipLayer {
                 break;
             }
             if retry > 0 {
-                info!("Retry {}/{} - attempting to contact seed nodes", retry, max_retries);
+                info!(
+                    "Retry {}/{} - attempting to contact seed nodes",
+                    retry, max_retries
+                );
                 tokio::time::sleep(retry_delay).await;
             }
 
@@ -545,13 +556,16 @@ impl GossipLayer {
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(1000)).await;
-                
+
                 {
                     let members = self.member_list.read().await;
                     let known_members = members.get_all_members().len();
                     successful_contacts = known_members;
                     if successful_contacts > 0 {
-                        info!("Successfully discovered {} cluster members", successful_contacts);
+                        info!(
+                            "Successfully discovered {} cluster members",
+                            successful_contacts
+                        );
                         break;
                     }
                 }
@@ -559,9 +573,15 @@ impl GossipLayer {
         }
 
         if successful_contacts == 0 {
-            warn!("Failed to contact any seed nodes after {} retries - starting isolated", max_retries);
+            warn!(
+                "Failed to contact any seed nodes after {} retries - starting isolated",
+                max_retries
+            );
         }
-        info!("Cluster join completed with {} known members", successful_contacts);
+        info!(
+            "Cluster join completed with {} known members",
+            successful_contacts
+        );
         Ok(())
     }
 
@@ -570,7 +590,7 @@ impl GossipLayer {
             return;
         }
 
-        let mut backends = self.backend_pool.lock().await;
+        let mut backends = self.backend_pool.write().await;
         for update in updates {
             backends.apply_backend_update(&update);
         }

@@ -1,11 +1,12 @@
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tracing::info;
 
 mod backend;
 mod config;
+mod connection_pool;
 mod gossip;
 mod health;
 mod proxy;
@@ -35,7 +36,15 @@ async fn main() -> Result<()> {
         })
         .collect();
 
-    let backend_pool = Arc::new(Mutex::new(backend::BackendPool::new(backends)));
+    let backend_pool = Arc::new(RwLock::new(backend::BackendPool::new(backends)));
+
+    let max_connections = 100; // TODO: Make configurable
+    let connection_pool = Arc::new(connection_pool::ConnectionPool::new(max_connections));
+    info!(
+        "Connection pool created (max {} per backend)",
+        max_connections
+    );
+
     let health_checker = health::HealthChecker::new(
         backend_pool.clone(),
         config.health_check.check_interval_seconds,
@@ -91,7 +100,7 @@ async fn main() -> Result<()> {
 
     info!("Gossip layer started on {}", gossip_addr);
 
-    let proxy = proxy::Proxy::new(config.server.listen_addr, backend_pool);
+    let proxy = proxy::Proxy::new(config.server.listen_addr, backend_pool, connection_pool);
     proxy.run().await?;
 
     info!("Flux is running.");

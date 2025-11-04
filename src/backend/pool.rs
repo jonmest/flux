@@ -1,15 +1,16 @@
-use std::net::SocketAddr;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
-
 use super::backend::Backend;
 use super::health::{BackendHealth, HealthStatus};
+use dashmap::DashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
 
 pub struct BackendPool {
     backends: Vec<BackendHealth>,
-    current_index: usize,
+    current_index: Arc<AtomicUsize>,
 }
 
 impl BackendPool {
@@ -18,30 +19,25 @@ impl BackendPool {
 
         Self {
             backends,
-            current_index: 0,
+            current_index: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    pub fn select_backend(&mut self) -> Option<Backend> {
+    pub fn select_backend(&self) -> Option<Backend> {
         if self.backends.is_empty() {
             return None;
         }
 
-        let start_index = self.current_index;
-        loop {
-            let backend_health = &self.backends[self.current_index];
-            self.current_index = (self.current_index + 1) % self.backends.len();
+        let start_index = self.current_index.fetch_add(1, Ordering::Relaxed) % self.backends.len();
+        for _ in 0..(self.backends.len()) {
+            let backend_health = &self.backends[start_index];
 
             if backend_health.status == HealthStatus::Healthy {
                 return Some(backend_health.backend.clone());
             }
-
-            // if no healhty backends
-            if self.current_index == start_index {
-                warn!("No healthy backends available!");
-                return None;
-            }
         }
+        warn!("No healthy backends available!");
+        None
     }
 
     pub fn update_health(&mut self, addr: SocketAddr, is_healthy: bool) {
@@ -155,4 +151,4 @@ impl BackendPool {
     }
 }
 
-pub type SharedBackendPool = Arc<Mutex<BackendPool>>;
+pub type SharedBackendPool = Arc<RwLock<BackendPool>>;

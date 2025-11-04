@@ -33,7 +33,7 @@ impl HealthChecker {
 
     async fn check_all_backends(&self) {
         let backends = {
-            let pool = self.backend_pool.lock().await;
+            let pool = self.backend_pool.read().await;
             pool.get_all_backends()
         };
 
@@ -46,7 +46,7 @@ impl HealthChecker {
 
             let task = tokio::spawn(async move {
                 let is_healthy = check_backend(addr, timeout).await;
-                let mut pool = pool.lock().await;
+                let mut pool = pool.write().await;
                 pool.update_health(addr, is_healthy);
             });
 
