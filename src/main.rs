@@ -11,7 +11,7 @@ mod gossip;
 mod health;
 mod proxy;
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 8)]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("flux=debug,info")
@@ -76,7 +76,6 @@ async fn main() -> Result<()> {
     let pending_indirect_pings_clone = gossip_layer.pending_indirect_pings();
     let member_list_clone = member_list.clone();
 
-    // msg receive loop
     tokio::spawn(async move {
         gossip_layer.run().await;
     });

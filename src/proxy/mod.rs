@@ -1,6 +1,6 @@
 use crate::backend::SharedBackendPool;
 use crate::connection_pool::SharedConnectionPool;
-use anyhow::{Result, anyhow};
+use anyhow::{Error, Result, anyhow};
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info};
@@ -71,7 +71,7 @@ async fn handle_connection(
     let mut backend_socket = connection_pool.get(backend.addr).await?;
 
     debug!("Connected to backend {}", backend.addr);
-    let result = copy_with_pooling(&mut client_socket, &mut backend_socket, client_addr).await;
+    let result = copy_with_pooling(&mut client_socket, &mut backend_socket).await;
     if result.is_ok() {
         connection_pool
             .return_connection(backend.addr, backend_socket)
@@ -85,48 +85,8 @@ async fn handle_connection(
 async fn copy_with_pooling(
     client: &mut TcpStream,
     backend: &mut TcpStream,
-    client_addr: SocketAddr,
 ) -> Result<()> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let mut client_buf = vec![0u8; 65536];
-    let mut backend_buf = vec![0u8; 65536];
-
-    let mut total_to_backend = 0u64;
-    let mut total_to_client = 0u64;
-
-    loop {
-        tokio::select! {
-            result = client.read(&mut client_buf) => {
-                match result {
-                    Ok(0) => {
-                        debug!(
-                            "Client {} closed. Transferred {} bytes to backend, {} bytes to client",
-                            client_addr, total_to_backend, total_to_client
-                        );
-                        return Ok(());
-                    }
-                    Ok(n) => {
-                        backend.write_all(&client_buf[..n]).await?;
-                        total_to_backend += n as u64;
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-
-            result = backend.read(&mut backend_buf) => {
-                match result {
-                    Ok(0) => {
-                        debug!("Backend closed connection");
-                        return Err(anyhow!("Backend closed connection"));
-                    }
-                    Ok(n) => {
-                        client.write_all(&backend_buf[..n]).await?;
-                        total_to_client += n as u64;
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-        }
-    }
+    let res = tokio::time::timeout(std::time::Duration::from_secs(30), tokio::io::copy_bidirectional(client, backend)).await;
+    res.map(|s| ())
+        .map_err(|err| err.into())
 }
