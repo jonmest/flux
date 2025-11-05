@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tracing::debug;
-use socket2::{Socket, TcpKeepalive};
+use socket2::{Domain, Protocol, Socket, TcpKeepalive, Type};
 use std::time::Duration;
 
 pub struct ConnectionPool {
