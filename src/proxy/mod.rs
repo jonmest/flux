@@ -1,11 +1,21 @@
+mod executor;
+
 use crate::backend::SharedBackendPool;
 use crate::connection_pool::SharedConnectionPool;
 use anyhow::{Error, Result, anyhow};
-use socket2::{Socket, Domain, Type, Protocol};
+use socket2::{Domain, Protocol, Socket, Type};
+use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::net::TcpListener as StdTcpListener;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info};
-use std::{net::TcpListener as StdTcpListener};
+
+use http_body_util::Full;
+use hyper::body::Bytes;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use hyper_util::rt::TokioIo;
 
 pub struct Proxy {
     listen_addr: SocketAddr,
@@ -13,6 +23,11 @@ pub struct Proxy {
     connection_pool: SharedConnectionPool,
 }
 
+// async fn handle_request(
+//     req: Request<hyper::body::Incoming>,
+// ) -> Result<Response<Full<Bytes>>, Infallible> {
+//    Ok(Response::new(Full::new(Bytes::from("Hello world!"))))
+//}
 impl Proxy {
     pub fn new(
         listen_addr: SocketAddr,
@@ -43,14 +58,25 @@ impl Proxy {
                         Ok((client_socket, client_addr)) => {
                             let backend_pool = backend_pool.clone();
                             let connection_pool = connection_pool.clone();
+                            let io = TokioIo::new(client_socket);
 
+                            tokio::spawn(async move {
+                                if let Err(e) = http2::Builder::new(executor::FluxExecutor)
+                                    .serve_connection(io, service_fn(handle_connection))
+                                    .await
+                                {
+                                    error!("Error serving connection: {}", e);
+                                }
+                            });
                             tokio::spawn(async move {
                                 if let Err(e) = handle_connection(
                                     client_socket,
                                     backend_pool,
                                     connection_pool,
                                     client_addr,
-                                ).await {
+                                )
+                                .await
+                                {
                                     error!("Error handling {client_addr}: {e:#}");
                                 }
                             });
@@ -64,6 +90,26 @@ impl Proxy {
         futures::future::pending::<()>().await;
         Ok(())
     }
+}
+
+async fn handle_connection_http(
+    mut client: TcpStream,
+    backend_pool: SharedBackendPool,
+    connection_pool: SharedConnectionPool,
+    client_addr: SocketAddr,
+) -> Result<()> {
+    let io = TokioIo::new(client);
+
+    let backend = {
+        let pool = backend_pool.read().await;
+        pool.select_backend()
+            .ok_or_else(|| anyhow!("No backends available"))?
+    };
+
+    debug!("Routing {} to backend {}", client_addr, backend.addr);
+    let mut backend_socket = connection_pool.get(backend.addr).await?;
+
+    Ok(())
 }
 
 async fn handle_connection(
@@ -97,7 +143,6 @@ async fn copy_with_pooling(client: &mut TcpStream, backend: &mut TcpStream) -> R
     Ok(())
 }
 
-
 fn bind_reuseport(addr: &SocketAddr) -> Result<StdTcpListener> {
     let addr: std::net::SocketAddr = (*addr).into();
     let domain = match addr {
@@ -115,3 +160,4 @@ fn bind_reuseport(addr: &SocketAddr) -> Result<StdTcpListener> {
     sock.set_nonblocking(true)?;
     Ok(sock.into())
 }
+
